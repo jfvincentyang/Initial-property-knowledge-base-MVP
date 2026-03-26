@@ -63,7 +63,7 @@
         <header class="panel-header">
           <div>
             <h2>制度入库</h2>
-            <p>管理员可以直接粘贴文本，也可以上传 TXT、MD、DOCX 文件入库。</p>
+            <p>管理员可以直接粘贴文本，也可以上传文件后先预览，再确认入库。</p>
           </div>
         </header>
 
@@ -83,8 +83,26 @@
             <input id="upload-category" name="category" type="text" placeholder="例如：装修管理 / 收费管理">
           </label>
 
-          <button class="primary-button" type="submit">上传文件入库</button>
-          <p class="inline-hint">当前版本支持 TXT、MD、DOCX。PDF 会提示先转成 DOCX/TXT。</p>
+          <button class="primary-button" type="submit">上传并生成预览</button>
+          <p class="inline-hint">支持 TXT、MD、DOCX；Linux 服务器安装 pdftotext 后支持 PDF。</p>
+        </form>
+
+        <section id="upload-preview-card" class="answer-card empty hidden" aria-live="polite">
+          <p>上传后会先显示正文预览，你确认没问题再入库。</p>
+        </section>
+
+        <form id="password-form" class="stack-form password-form">
+          <label class="field">
+            <span>当前密码</span>
+            <input id="current-password" name="currentPassword" type="password" placeholder="请输入当前密码" required>
+          </label>
+
+          <label class="field">
+            <span>新密码</span>
+            <input id="next-password" name="nextPassword" type="password" placeholder="请输入新密码" required>
+          </label>
+
+          <button class="secondary-button" type="submit">修改当前账号密码</button>
         </form>
 
         <form id="document-form" class="stack-form">

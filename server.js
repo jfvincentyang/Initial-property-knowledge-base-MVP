@@ -1,19 +1,25 @@
 import { createReadStream, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createLoginLimiter, ensureHashedUsers, getClientIp, loadUsers, updateUserPassword, verifyPassword } from "./auth.js";
 import { extractImportedDocument } from "./file-import.js";
 import { createKnowledgeBase } from "./knowledge-base.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PORT = 8000;
-const kb = createKnowledgeBase(path.join(__dirname, "data", "knowledge-base.json"));
+const PORT = Number(process.env.PORT || 8000);
+const NODE_ENV = process.env.NODE_ENV || "development";
 const userConfigPath = path.join(__dirname, "config", "users.json");
+const databasePath = path.join(__dirname, "data", "knowledge-base.sqlite");
+const legacyJsonPath = path.join(__dirname, "data", "knowledge-base.json");
 const importTempRoot = path.join(__dirname, "data", "imports");
+const kb = createKnowledgeBase(databasePath, { legacyJsonPath });
 const sessions = new Map();
+const loginLimiter = createLoginLimiter();
+const importDrafts = new Map();
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -32,16 +38,24 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/login" && request.method === "POST") {
-      const payload = await readJsonBody(request);
-      const users = await loadUsers();
-      const user = users.find(
-        (item) => item.username === payload.username && item.password === payload.password
-      );
+      const clientIp = getClientIp(request);
+      const limiterState = loginLimiter.check(clientIp);
+      if (!limiterState.allowed) {
+        return sendJson(response, 429, {
+          error: `登录失败次数过多，请在 ${Math.ceil(limiterState.retryAfterMs / 1000)} 秒后重试`,
+        });
+      }
 
-      if (!user) {
+      const payload = await readJsonBody(request);
+      const users = await loadUsers(userConfigPath);
+      const user = users.find((item) => item.username === payload.username);
+
+      if (!user || !verifyPassword(payload.password, user.passwordHash)) {
+        loginLimiter.recordFailure(clientIp);
         return sendJson(response, 401, { error: "账号或密码不正确" });
       }
 
+      loginLimiter.reset(clientIp);
       const sessionId = crypto.randomBytes(24).toString("hex");
       const nextSession = {
         sessionId,
@@ -51,7 +65,7 @@ const server = http.createServer(async (request, response) => {
       };
 
       sessions.set(sessionId, nextSession);
-      response.setHeader("Set-Cookie", buildCookie(sessionId));
+      response.setHeader("Set-Cookie", buildCookie(sessionId, request));
       return sendJson(response, 200, { session: sanitizeSession(nextSession) });
     }
 
@@ -61,7 +75,19 @@ const server = http.createServer(async (request, response) => {
         sessions.delete(sessionId);
       }
 
-      response.setHeader("Set-Cookie", buildExpiredCookie());
+      response.setHeader("Set-Cookie", buildExpiredCookie(request));
+      return sendJson(response, 200, { ok: true });
+    }
+
+    if (url.pathname === "/api/change-password" && request.method === "POST") {
+      requireAuthenticated(session);
+      const payload = await readJsonBody(request);
+      await updateUserPassword(
+        userConfigPath,
+        session.username,
+        payload.currentPassword,
+        payload.nextPassword
+      );
       return sendJson(response, 200, { ok: true });
     }
 
@@ -84,7 +110,7 @@ const server = http.createServer(async (request, response) => {
       });
     }
 
-    if (url.pathname === "/api/documents/import" && request.method === "POST") {
+    if (url.pathname === "/api/documents/import-preview" && request.method === "POST") {
       requireRole(session, "admin");
       const payload = await readJsonBody(request);
       const extracted = await extractImportedDocument({
@@ -93,11 +119,45 @@ const server = http.createServer(async (request, response) => {
         tempRoot: importTempRoot,
       });
 
-      const document = await kb.addDocument({
+      const draftId = crypto.randomBytes(16).toString("hex");
+      importDrafts.set(draftId, {
+        draftId,
         title: payload.title || extracted.title,
         category: payload.category || extracted.category,
         content: extracted.content,
+        sourceType: extracted.sourceType,
+        createdAt: Date.now(),
+        owner: session.username,
       });
+
+      return sendJson(response, 200, {
+        draft: {
+          draftId,
+          title: payload.title || extracted.title,
+          category: payload.category || extracted.category,
+          sourceType: extracted.sourceType,
+          preview: extracted.content.slice(0, 3000),
+          contentLength: extracted.content.length,
+        },
+      });
+    }
+
+    if (url.pathname === "/api/documents/import-confirm" && request.method === "POST") {
+      requireRole(session, "admin");
+      const payload = await readJsonBody(request);
+      const draft = importDrafts.get(String(payload.draftId ?? ""));
+
+      if (!draft || draft.owner !== session.username) {
+        return sendJson(response, 404, { error: "未找到可确认的导入预览" });
+      }
+
+      const document = await kb.addDocument({
+        title: draft.title,
+        category: draft.category,
+        content: draft.content,
+      });
+
+      importDrafts.delete(draft.draftId);
 
       return sendJson(response, 201, {
         document: {
@@ -105,7 +165,7 @@ const server = http.createServer(async (request, response) => {
           title: document.title,
           category: document.category,
           chunkCount: document.chunks.length,
-          sourceType: extracted.sourceType,
+          sourceType: draft.sourceType,
         },
       });
     }
@@ -132,10 +192,13 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+await ensureHashedUsers(userConfigPath);
+
 server.listen(PORT, async () => {
-  const users = await loadUsers();
+  const users = await loadUsers(userConfigPath);
   console.log(`Property KB server running at http://localhost:${PORT}`);
   console.log(`Loaded ${users.length} local accounts from config/users.json`);
+  console.log(`Environment: ${NODE_ENV}`);
 });
 
 async function serveStaticFile(pathname, response) {
@@ -186,23 +249,6 @@ async function readJsonBody(request) {
   }
 }
 
-async function loadUsers() {
-  const raw = await readFile(userConfigPath, "utf8");
-  const parsed = JSON.parse(raw);
-  const users = Array.isArray(parsed.users) ? parsed.users : [];
-
-  if (users.length === 0) {
-    throw new Error("未在 config/users.json 中配置账号");
-  }
-
-  return users.map((user) => ({
-    username: String(user.username ?? "").trim(),
-    password: String(user.password ?? "").trim(),
-    role: user.role === "admin" ? "admin" : "user",
-    displayName: String(user.displayName ?? user.username ?? "").trim(),
-  }));
-}
-
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -234,12 +280,40 @@ function readCookie(headerValue) {
   return Object.fromEntries(pairs);
 }
 
-function buildCookie(sessionId) {
-  return `sessionId=${sessionId}; HttpOnly; Path=/; SameSite=Lax`;
+function buildCookie(sessionId, request) {
+  const secure = shouldUseSecureCookie(request);
+  return [
+    `sessionId=${sessionId}`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Strict",
+    secure ? "Secure" : "",
+  ].filter(Boolean).join("; ");
 }
 
-function buildExpiredCookie() {
-  return "sessionId=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0";
+function buildExpiredCookie(request) {
+  const secure = shouldUseSecureCookie(request);
+  return [
+    "sessionId=",
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Strict",
+    "Max-Age=0",
+    secure ? "Secure" : "",
+  ].filter(Boolean).join("; ");
+}
+
+function shouldUseSecureCookie(request) {
+  if (process.env.COOKIE_SECURE === "1") {
+    return true;
+  }
+
+  if (NODE_ENV === "production") {
+    const forwardedProto = String(request.headers["x-forwarded-proto"] ?? "").toLowerCase();
+    return forwardedProto.includes("https");
+  }
+
+  return false;
 }
 
 function sanitizeSession(session) {
@@ -264,7 +338,6 @@ function requireAuthenticated(session) {
 
 function requireRole(session, expectedRole) {
   requireAuthenticated(session);
-
   if (session.role !== expectedRole) {
     const error = new Error(expectedRole === "admin" ? "当前账号没有管理权限" : "当前账号没有操作权限");
     error.statusCode = 403;

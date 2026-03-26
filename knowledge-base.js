@@ -1,11 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-const DEFAULT_STORE = {
-  documents: [],
-};
-
-const CLAUSE_RE = /第[一二三四五六七八九十百千万零〇0-9]+条/g;
+const DEFAULT_STORE = { documents: [] };
 const CLAUSE_START_RE = /(?:^|\n)\s*(第[一二三四五六七八九十百千万零〇0-9]+条)/g;
 
 const STOP_WORDS = new Set([
@@ -75,82 +73,43 @@ const RISK_HINTS = [
   "制止",
 ];
 
-const WEAK_TOPIC_HINTS = [
-  "档案",
-  "资料",
-  "培训",
-  "议事规则",
-  "备案证明",
-  "职责",
-  "核定",
-  "工作制度",
-];
+const WEAK_TOPIC_HINTS = ["档案", "资料", "培训", "议事规则", "备案证明", "职责", "核定", "工作制度"];
 
 const THEME_RULES = [
-  {
-    name: "装修管理",
-    keywords: ["装修", "装饰装修", "施工", "管理协议", "装修协议", "施工时间", "垃圾清运", "巡查", "停工", "整改"],
-  },
-  {
-    name: "收费管理",
-    keywords: ["物业费", "收费", "交费", "催缴", "欠费", "收费标准", "清运费", "服务费"],
-  },
-  {
-    name: "投诉处理",
-    keywords: ["投诉", "举报", "调解", "纠纷", "受理", "处理机制", "12345"],
-  },
-  {
-    name: "停车管理",
-    keywords: ["停车", "车位", "车辆", "机动车", "停车场", "停车库"],
-  },
-  {
-    name: "维修养护",
-    keywords: ["维修", "养护", "保养", "电梯", "水箱", "渗漏", "共用设施", "设施设备"],
-  },
-  {
-    name: "应急管理",
-    keywords: ["应急", "突发", "救援", "事故", "消防", "安全责任"],
-  },
-  {
-    name: "业主大会",
-    keywords: ["业主大会", "业主委员会", "筹备组", "议事规则", "委员", "换届"],
-  },
-  {
-    name: "专项维修资金",
-    keywords: ["专项维修资金", "维修资金", "归集", "续筹"],
-  },
-  {
-    name: "绿化环境",
-    keywords: ["树木", "绿化", "修剪", "迁移", "环境卫生"],
-  },
+  { name: "装修管理", keywords: ["装修", "装饰装修", "施工", "管理协议", "装修协议", "施工时间", "垃圾清运", "巡查", "停工", "整改"] },
+  { name: "收费管理", keywords: ["物业费", "收费", "交费", "催缴", "欠费", "收费标准", "清运费", "服务费"] },
+  { name: "投诉处理", keywords: ["投诉", "举报", "调解", "纠纷", "受理", "处理机制", "12345"] },
+  { name: "停车管理", keywords: ["停车", "车位", "车辆", "机动车", "停车场", "停车库"] },
+  { name: "维修养护", keywords: ["维修", "养护", "保养", "电梯", "水箱", "渗漏", "共用设施", "设施设备"] },
+  { name: "应急管理", keywords: ["应急", "突发", "救援", "事故", "消防", "安全责任"] },
+  { name: "业主大会", keywords: ["业主大会", "业主委员会", "筹备组", "议事规则", "委员", "换届"] },
+  { name: "专项维修资金", keywords: ["专项维修资金", "维修资金", "归集", "续筹"] },
+  { name: "绿化环境", keywords: ["树木", "绿化", "修剪", "迁移", "环境卫生"] },
 ];
 
-export function createKnowledgeBase(storePath) {
+const QUESTION_THEME_RULES = [
+  { name: "装修管理", pattern: /装修|装饰装修|施工|管理协议|整改通知书/ },
+  { name: "收费管理", pattern: /物业费|收费|交费|缴费|欠费|催缴|费用/ },
+  { name: "投诉处理", pattern: /投诉|举报|纠纷|受理|调解|反映/ },
+  { name: "停车管理", pattern: /停车|车位|车辆|机动车/ },
+  { name: "维修养护", pattern: /维修|养护|电梯|水箱|渗漏|设施设备/ },
+  { name: "应急管理", pattern: /应急|突发|事故|消防|救援/ },
+  { name: "业主大会", pattern: /业主大会|业主委员会|筹备组|换届/ },
+  { name: "专项维修资金", pattern: /专项维修资金|维修资金/ },
+  { name: "绿化环境", pattern: /树木|绿化|修剪|迁移|环境卫生/ },
+];
+
+const COMPOSITE_TITLE_RE = /(?:上海市[^。；\n]{4,80}?(?:规定|条例|办法|通知|协议|示范文本)|关于[^。；\n]{4,100}?(?:规定|通知|办法|意见|协议)|附件[0-9一二三四五六七八九十]+[^。；\n]{0,40}?(?:示范文本|通知书|回证|协议|表))/g;
+
+export function createKnowledgeBase(databasePath, options = {}) {
+  const db = new DatabaseSync(databasePath);
+  initializeDatabase(db);
+  migrateLegacyJsonIfNeeded(db, options.legacyJsonPath);
+
   return {
-    storePath,
-    async readStore() {
-      try {
-        const raw = await readFile(storePath, "utf8");
-        const parsed = JSON.parse(raw);
-        return {
-          documents: Array.isArray(parsed.documents) ? parsed.documents : [],
-        };
-      } catch (error) {
-        if (error.code === "ENOENT") {
-          return structuredClone(DEFAULT_STORE);
-        }
-        throw error;
-      }
-    },
-
-    async writeStore(store) {
-      await mkdir(path.dirname(storePath), { recursive: true });
-      await writeFile(storePath, JSON.stringify(store, null, 2), "utf8");
-    },
-
+    databasePath,
     async listDocuments() {
-      const store = await this.readStore();
-      return store.documents.map((document) => ({
+      return loadDocuments(db).map((document) => ({
         id: document.id,
         title: document.title,
         category: document.category,
@@ -169,7 +128,6 @@ export function createKnowledgeBase(storePath) {
         throw new Error("制度名称和内容不能为空");
       }
 
-      const store = await this.readStore();
       const document = buildDocument({
         id: createId(),
         title,
@@ -178,8 +136,7 @@ export function createKnowledgeBase(storePath) {
         createdAt: new Date().toISOString(),
       });
 
-      store.documents.unshift(document);
-      await this.writeStore(store);
+      saveDocument(db, document);
       return document;
     },
 
@@ -189,16 +146,13 @@ export function createKnowledgeBase(storePath) {
         throw new Error("制度标识不能为空");
       }
 
-      const store = await this.readStore();
-      const nextDocuments = store.documents.filter((document) => document.id !== cleanId);
-
-      if (nextDocuments.length === store.documents.length) {
+      const result = db.prepare("DELETE FROM documents WHERE id = ?").run(cleanId);
+      if (result.changes === 0) {
         const error = new Error("未找到要删除的制度");
         error.statusCode = 404;
         throw error;
       }
 
-      await this.writeStore({ documents: nextDocuments });
       return { id: cleanId };
     },
 
@@ -208,8 +162,8 @@ export function createKnowledgeBase(storePath) {
         throw new Error("问题不能为空");
       }
 
-      const store = await this.ensureNormalizedStore();
-      const matches = findRelevantChunks(store.documents, cleanQuestion);
+      const documents = await this.ensureNormalizedStore();
+      const matches = findRelevantChunks(documents, cleanQuestion);
 
       if (matches.length === 0 || matches[0].score < 3) {
         return {
@@ -231,30 +185,134 @@ export function createKnowledgeBase(storePath) {
     },
 
     async ensureNormalizedStore() {
-      const store = await this.readStore();
+      let documents = loadDocuments(db);
+      const expanded = expandCompositeDocuments(db, documents);
+      if (expanded.changed) {
+        documents = loadDocuments(db);
+      }
       let changed = false;
 
-      const documents = store.documents.map((document) => {
+      for (const document of documents) {
         const normalized = buildDocument(document);
-        const needsRewrite =
+        if (
           normalized.content !== String(document.content ?? "") ||
-          JSON.stringify(normalized.chunks) !== JSON.stringify(Array.isArray(document.chunks) ? document.chunks : []);
-
-        if (needsRewrite) {
+          JSON.stringify(normalized.chunks) !== JSON.stringify(Array.isArray(document.chunks) ? document.chunks : [])
+        ) {
+          saveDocument(db, normalized);
           changed = true;
         }
-
-        return normalized;
-      });
-
-      const nextStore = { documents };
-      if (changed) {
-        await this.writeStore(nextStore);
       }
 
-      return nextStore;
+      return changed ? loadDocuments(db) : documents;
     },
   };
+}
+
+function initializeDatabase(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL,
+      chunks_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_documents_created_at
+    ON documents(created_at DESC);
+  `);
+}
+
+function migrateLegacyJsonIfNeeded(db, legacyJsonPath) {
+  if (!legacyJsonPath || !existsSync(legacyJsonPath)) {
+    return;
+  }
+
+  const countRow = db.prepare("SELECT COUNT(*) AS count FROM documents").get();
+  if ((countRow?.count ?? 0) > 0) {
+    return;
+  }
+
+  const raw = readFileSync(legacyJsonPath, "utf8");
+  const parsed = JSON.parse(raw);
+  const documents = Array.isArray(parsed.documents) ? parsed.documents : [];
+
+  for (const document of documents) {
+    saveDocument(db, buildDocument(document));
+  }
+
+  const backupPath = `${legacyJsonPath}.migrated-backup`;
+  if (!existsSync(backupPath)) {
+    writeFileSync(backupPath, raw, "utf8");
+  }
+
+  try {
+    unlinkSync(legacyJsonPath);
+  } catch {
+    // Ignore cleanup failure and keep the backup.
+  }
+}
+
+function loadDocuments(db) {
+  const rows = db.prepare(`
+    SELECT id, title, category, content, chunks_json, created_at, updated_at
+    FROM documents
+    ORDER BY datetime(created_at) DESC, rowid DESC
+  `).all();
+
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    content: row.content,
+    chunks: normalizeChunks(JSON.parse(row.chunks_json)),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+function expandCompositeDocuments(db, documents) {
+  let changed = false;
+
+  for (const document of documents) {
+    const parts = splitCompositeDocument(document);
+    if (parts.length <= 1) {
+      continue;
+    }
+
+    db.prepare("DELETE FROM documents WHERE id = ?").run(document.id);
+    for (const part of parts) {
+      saveDocument(db, part);
+    }
+    changed = true;
+  }
+
+  return { changed };
+}
+
+function saveDocument(db, document) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO documents (id, title, category, content, chunks_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      category = excluded.category,
+      content = excluded.content,
+      chunks_json = excluded.chunks_json,
+      updated_at = excluded.updated_at
+  `).run(
+    document.id,
+    document.title,
+    document.category,
+    document.content,
+    JSON.stringify(document.chunks),
+    document.createdAt ?? now,
+    now
+  );
 }
 
 function buildDocument(input) {
@@ -268,6 +326,76 @@ function buildDocument(input) {
     chunks: splitIntoChunks(content),
     createdAt: input.createdAt ?? new Date().toISOString(),
   };
+}
+
+function splitCompositeDocument(document) {
+  const content = String(document.content ?? "");
+  if (!isCompositePolicyDocument(document, content)) {
+    return [document];
+  }
+
+  const markers = [];
+  for (const match of content.matchAll(COMPOSITE_TITLE_RE)) {
+    const title = String(match[0] ?? "").trim();
+    const start = Number(match.index ?? -1);
+    if (start < 0) continue;
+
+    const rest = content.slice(start + title.length, start + title.length + 30);
+    if (!/(第一条|第一章|一、|号|室（|室\()/u.test(rest)) {
+      continue;
+    }
+
+    const previous = markers[markers.length - 1];
+    if (previous && start - previous.start < 200) {
+      continue;
+    }
+
+    markers.push({ title, start });
+  }
+
+  if (markers.length <= 1) {
+    return [document];
+  }
+
+  const parts = [];
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index];
+    const next = markers[index + 1];
+    const partContent = content.slice(marker.start, next ? next.start : content.length).trim();
+    if (partContent.length < 120) {
+      continue;
+    }
+
+    parts.push(buildDocument({
+      id: `${document.id}-part-${index + 1}`,
+      title: normalizeCompositeTitle(marker.title),
+      category: inferCompositeCategory(marker.title, partContent),
+      content: partContent,
+      createdAt: document.createdAt,
+    }));
+  }
+
+  return parts.length > 1 ? parts : [document];
+}
+
+function isCompositePolicyDocument(document, content) {
+  return (
+    String(document.title ?? "").includes("政策法规") &&
+    content.length > 50000 &&
+    (content.match(COMPOSITE_TITLE_RE) ?? []).length > 2
+  );
+}
+
+function normalizeCompositeTitle(title) {
+  return String(title ?? "")
+    .replace(/上海市房屋管理局办公室\d{4}年\d{1,2}月\d{1,2}日印发/g, "")
+    .replace(/沪房规范〔\d{4}〕\d+\s*号/g, "")
+    .trim();
+}
+
+function inferCompositeCategory(title, content) {
+  const detectedThemes = detectQuestionThemes(`${title} ${content.slice(0, 200)}`);
+  return detectedThemes[0] ?? "政策法规";
 }
 
 export function splitIntoChunks(content) {
@@ -292,7 +420,7 @@ export function findRelevantChunks(documents, question) {
   const keywords = extractKeywords(question);
   const intent = detectIntent(question);
   const topicTerms = extractTopicTerms(question);
-  const questionThemes = inferThemes(question);
+  const questionThemes = detectQuestionThemes(question);
   const normalizedQuestion = normalizeText(question);
   const results = [];
 
@@ -301,6 +429,7 @@ export function findRelevantChunks(documents, question) {
     const chunks = normalizeChunks(document.chunks);
 
     for (const chunk of chunks) {
+      const themeAnchorHits = countThemeAnchorHits(chunk.text, questionThemes);
       const score = scoreChunk({
         chunk,
         keywords,
@@ -324,6 +453,7 @@ export function findRelevantChunks(documents, question) {
           score,
           topicHits: countTopicHits(chunk.text, topicTerms),
           themeHits: countThemeHits(chunk.themes, questionThemes),
+          themeAnchorHits,
           actionSentences: extractActionSentences(chunk.text),
           riskSentences: extractRiskSentences(chunk.text),
         });
@@ -371,6 +501,7 @@ export function scoreChunk({
   const normalizedChunk = normalizeText(chunk.text);
   const topicHits = countTopicHits(chunk.text, topicTerms);
   const themeHits = countThemeHits(chunk.themes, questionThemes);
+  const themeAnchorHits = countThemeAnchorHits(chunk.text, questionThemes);
   const actionSentences = extractActionSentences(chunk.text);
   const riskSentences = extractRiskSentences(chunk.text);
   const strongGuidance = hasStrongGuidance(chunk.text);
@@ -389,6 +520,7 @@ export function scoreChunk({
 
   score += topicHits * 5;
   score += themeHits * 12;
+  score += themeAnchorHits * 8;
   score += actionSentences.length * 2;
   score += riskSentences.length * 2;
 
@@ -428,6 +560,18 @@ export function scoreChunk({
     score -= 18;
   }
 
+  if (questionThemes.length > 0 && themeAnchorHits === 0) {
+    score -= 24;
+  }
+
+  if (questionThemes.length === 1 && themeHits > 0 && (chunk.themes?.length ?? 0) === 1) {
+    score += 10;
+  }
+
+  if (questionThemes.length === 1 && themeHits > 0 && (chunk.themes?.length ?? 0) > 1) {
+    score -= 4;
+  }
+
   if (chunk.clauseLabel) {
     score += 2;
   }
@@ -450,20 +594,50 @@ export function scoreChunk({
 
 function buildAnswer(question, matches) {
   const intent = detectIntent(question);
-  const questionThemes = inferThemes(question);
+  const questionThemes = detectQuestionThemes(question);
   const filteredByTheme = questionThemes.length > 0
     ? matches.filter((match) => countThemeHits(match.themes, questionThemes) > 0)
     : matches;
+  if (questionThemes.length > 0 && filteredByTheme.length === 0) {
+    return buildNoMatchAnswer(question);
+  }
   const filteredByQuality = (filteredByTheme.length > 0 ? filteredByTheme : matches)
     .filter((match) => !isReferenceOnlyClause(match.excerpt))
     .filter((match) => !isGovernanceOnlyClause(match.excerpt));
-  const effectiveMatches = filteredByQuality.length > 0 ? filteredByQuality : (filteredByTheme.length > 0 ? filteredByTheme : matches);
+  const evidenceMatches = filteredByQuality.filter((match) => hasSufficientThemeEvidence(match, questionThemes, intent));
+  const effectiveMatches = evidenceMatches.length > 0
+    ? evidenceMatches
+    : (filteredByQuality.length > 0 ? filteredByQuality : (filteredByTheme.length > 0 ? filteredByTheme : matches));
+
+  if (questionThemes.length > 0 && effectiveMatches.every((match) => countThemeHits(match.themes, questionThemes) === 0)) {
+    return buildNoMatchAnswer(question);
+  }
+
+  if (questionThemes.length > 0 && evidenceMatches.length === 0) {
+    return buildNoMatchAnswer(question);
+  }
 
   if (intent === "topic_guidance") {
     return buildTopicAnswer(question, effectiveMatches);
   }
 
   return buildDirectAnswer(question, effectiveMatches);
+}
+
+function buildNoMatchAnswer(question) {
+  return {
+    summary: `针对“${question}”，当前知识库中没有找到足够明确且主题一致的制度依据。`,
+    workGuide: "建议先补充该专题的制度文件，或换一个更具体的问题再查询。",
+    applicableRule: "",
+    versionNote: "",
+    basis: [],
+    steps: [
+      "先确认该问题对应的制度是否已经入库。",
+      "如果未入库，优先补充本专题制度后再查询。",
+    ],
+    violationHandling: [],
+    references: [],
+  };
 }
 
 function buildTopicAnswer(question, matches) {
@@ -605,11 +779,7 @@ function buildVersionNote(primary, matches) {
 }
 
 function isOperationalTopicMatch(match) {
-  if (isReferenceOnlyClause(match.excerpt)) {
-    return false;
-  }
-
-  if (isGovernanceOnlyClause(match.excerpt)) {
+  if (isReferenceOnlyClause(match.excerpt) || isGovernanceOnlyClause(match.excerpt)) {
     return false;
   }
 
@@ -617,13 +787,7 @@ function isOperationalTopicMatch(match) {
     return true;
   }
 
-  const text = match.excerpt;
-  const weakOnly = containsAny(text, WEAK_TOPIC_HINTS) && !hasStrongGuidance(text);
-  if (weakOnly) {
-    return false;
-  }
-
-  return hasStrongGuidance(text);
+  return hasStrongGuidance(match.excerpt);
 }
 
 function hasWeakTopicOnly(text, actionSentences, riskSentences) {
@@ -631,20 +795,7 @@ function hasWeakTopicOnly(text, actionSentences, riskSentences) {
 }
 
 function hasStrongGuidance(text) {
-  return containsAny(text, [
-    "事先告知",
-    "签订",
-    "管理协议",
-    "施工时间",
-    "垃圾清运",
-    "巡查",
-    "劝阻",
-    "制止",
-    "报告",
-    "上报",
-    "停工",
-    "整改",
-  ]);
+  return containsAny(text, ["事先告知", "签订", "管理协议", "施工时间", "垃圾清运", "巡查", "劝阻", "制止", "报告", "上报", "停工", "整改"]);
 }
 
 function isReferenceOnlyClause(text) {
@@ -666,15 +817,12 @@ function detectIntent(question) {
   if (/(能否|是否|可不可以|准不准|允许|可以吗)/.test(question)) {
     return "is_allowed";
   }
-
   if (/(怎么做|如何做|怎么开展|如何开展|怎么管理|如何管理)/.test(question)) {
     return "topic_guidance";
   }
-
   if (/(怎么|如何|怎么办|处理)/.test(question)) {
     return "how_to_handle";
   }
-
   return "general";
 }
 
@@ -699,6 +847,26 @@ function countThemeHits(chunkThemes, questionThemes) {
   }
   const themeSet = new Set(chunkThemes ?? []);
   return questionThemes.filter((theme) => themeSet.has(theme)).length;
+}
+
+function countThemeAnchorHits(text, questionThemes) {
+  const source = String(text ?? "");
+  let hits = 0;
+
+  for (const theme of questionThemes) {
+    const rule = THEME_RULES.find((item) => item.name === theme);
+    if (!rule) {
+      continue;
+    }
+
+    for (const keyword of rule.keywords) {
+      if (source.includes(keyword)) {
+        hits += 1;
+      }
+    }
+  }
+
+  return hits;
 }
 
 function extractActionSentences(chunkText) {
@@ -805,10 +973,60 @@ function inferThemes(text) {
     .map((rule) => rule.name);
 }
 
+function detectQuestionThemes(text) {
+  const source = String(text ?? "");
+  const detected = QUESTION_THEME_RULES
+    .filter((rule) => rule.pattern.test(source))
+    .map((rule) => rule.name);
+
+  if (detected.length > 0) {
+    return detected;
+  }
+
+  return inferThemes(source);
+}
+
+function hasSufficientThemeEvidence(match, questionThemes, intent) {
+  if (questionThemes.length === 0) {
+    return true;
+  }
+
+  const primaryTheme = questionThemes[0];
+  const text = String(match.excerpt ?? "");
+  const anchorHits = Number(match.themeAnchorHits ?? 0);
+
+  const guardPatterns = {
+    "装修管理": /(装修|装饰装修|施工|管理协议|整改|巡查|停工)/,
+    "收费管理": /(物业费|收费|收费标准|交纳|缴纳|催缴|收支情况|市场调节价)/,
+    "投诉处理": /(投诉|举报|受理|调查处理|反馈|调解)/,
+    "停车管理": /(停车|车位|车辆|机动车|停车场|停车库)/,
+    "维修养护": /(维修|养护|保养|电梯|水箱|渗漏|设施设备)/,
+    "应急管理": /(应急|救援|事故|消防)/,
+    "业主大会": /(业主大会|业主委员会|筹备组|换届)/,
+    "专项维修资金": /(专项维修资金|维修资金|归集|续筹)/,
+    "绿化环境": /(树木|绿化|修剪|迁移|环境卫生)/,
+  };
+
+  const guard = guardPatterns[primaryTheme];
+  if (!guard) {
+    return true;
+  }
+
+  if (!guard.test(text)) {
+    return false;
+  }
+
+  if (intent === "topic_guidance" || intent === "how_to_handle") {
+    return anchorHits >= 2 || match.actionSentences.length > 0 || match.riskSentences.length > 0;
+  }
+
+  return anchorHits >= 1;
+}
+
 function formatRuleLabel(match) {
-  const categoryText = match.category ? `（${match.category}）` : "";
-  const clauseText = match.clauseLabel ? ` ${match.clauseLabel}` : "";
-  return `${match.title}${categoryText}${clauseText}`;
+  const categoryText = match?.category ? `（${match.category}）` : "";
+  const clauseText = match?.clauseLabel ? ` ${match.clauseLabel}` : "";
+  return `${match?.title ?? ""}${categoryText}${clauseText}`.trim();
 }
 
 function formatReference(match) {
@@ -853,11 +1071,9 @@ function compareMatches(left, right) {
   if (right.score !== left.score) {
     return right.score - left.score;
   }
-
   if (right.themeHits !== left.themeHits) {
     return right.themeHits - left.themeHits;
   }
-
   if (right.topicHits !== left.topicHits) {
     return right.topicHits - left.topicHits;
   }
@@ -941,14 +1157,9 @@ function recencyBonus(createdAt) {
   if (Number.isNaN(timestamp)) {
     return 0;
   }
-
   const ageInDays = Math.max(0, (Date.now() - timestamp) / (1000 * 60 * 60 * 24));
-  if (ageInDays <= 30) {
-    return 2;
-  }
-  if (ageInDays <= 180) {
-    return 1;
-  }
+  if (ageInDays <= 30) return 2;
+  if (ageInDays <= 180) return 1;
   return 0;
 }
 

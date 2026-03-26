@@ -2,6 +2,8 @@ const loginForm = document.querySelector("#login-form");
 const logoutButton = document.querySelector("#logout-button");
 const uploadForm = document.querySelector("#upload-form");
 const uploadFileInput = document.querySelector("#upload-file");
+const uploadPreviewCard = document.querySelector("#upload-preview-card");
+const passwordForm = document.querySelector("#password-form");
 const documentForm = document.querySelector("#document-form");
 const questionForm = document.querySelector("#question-form");
 const saveStatus = document.querySelector("#save-status");
@@ -15,10 +17,12 @@ const sessionName = document.querySelector("#session-name");
 const sessionRole = document.querySelector("#session-role");
 
 let currentSession = null;
+let pendingImportDraft = null;
 
 loginForm.addEventListener("submit", handleLoginSubmit);
 logoutButton.addEventListener("click", handleLogout);
 uploadForm.addEventListener("submit", handleUploadSubmit);
+passwordForm.addEventListener("submit", handlePasswordSubmit);
 documentForm.addEventListener("submit", handleDocumentSubmit);
 questionForm.addEventListener("submit", handleQuestionSubmit);
 
@@ -52,11 +56,12 @@ function renderSession() {
   if (!isLoggedIn) {
     sessionName.textContent = "未登录";
     sessionRole.textContent = "请先登录";
+    resetUploadPreview();
     return;
   }
 
   sessionName.textContent = currentSession.displayName || currentSession.username;
-  sessionRole.textContent = isAdmin ? "角色：管理员，可入库、删除和提问" : "角色：普通用户，只能提问";
+  sessionRole.textContent = isAdmin ? "角色：管理员，可入库、删除、改密码和提问" : "角色：普通用户，只能提问";
 }
 
 async function loadDocuments() {
@@ -83,9 +88,7 @@ async function handleLoginSubmit(event) {
   try {
     const response = await fetch("/api/login", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
@@ -108,6 +111,7 @@ async function handleLogout() {
     await fetch("/api/logout", { method: "POST" });
   } finally {
     currentSession = null;
+    pendingImportDraft = null;
     renderSession();
     loginStatus.textContent = "";
     saveStatus.textContent = "";
@@ -125,7 +129,7 @@ async function handleUploadSubmit(event) {
     return;
   }
 
-  saveStatus.textContent = `正在上传：${file.name}`;
+  saveStatus.textContent = `正在解析：${file.name}`;
 
   try {
     const contentBase64 = await readFileAsBase64(file);
@@ -137,24 +141,85 @@ async function handleUploadSubmit(event) {
       contentBase64,
     };
 
-    const response = await fetch("/api/documents/import", {
+    const response = await fetch("/api/documents/import-preview", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
     const result = await response.json();
     if (!response.ok) {
-      throw new Error(result.error ?? "上传入库失败");
+      throw new Error(result.error ?? "生成预览失败");
     }
 
-    uploadForm.reset();
-    saveStatus.textContent = `文件已入库：《${result.document.title}》`;
-    await loadDocuments();
+    pendingImportDraft = result.draft;
+    renderUploadPreview(result.draft);
+    saveStatus.textContent = `已生成预览：《${result.draft.title}》`;
   } catch (error) {
     saveStatus.textContent = error.message || "上传失败，请稍后重试。";
+  }
+}
+
+async function handleConfirmImport() {
+  if (!pendingImportDraft) {
+    return;
+  }
+
+  saveStatus.textContent = `正在正式入库：《${pendingImportDraft.title}》`;
+
+  try {
+    const response = await fetch("/api/documents/import-confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draftId: pendingImportDraft.draftId }),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "确认入库失败");
+    }
+
+    saveStatus.textContent = `文件已入库：《${result.document.title}》`;
+    uploadForm.reset();
+    resetUploadPreview();
+    await loadDocuments();
+  } catch (error) {
+    saveStatus.textContent = error.message || "确认入库失败，请稍后重试。";
+  }
+}
+
+function handleCancelImport() {
+  pendingImportDraft = null;
+  resetUploadPreview();
+  saveStatus.textContent = "已取消本次导入预览。";
+}
+
+async function handlePasswordSubmit(event) {
+  event.preventDefault();
+  const formData = new FormData(passwordForm);
+  const payload = {
+    currentPassword: String(formData.get("currentPassword") ?? "").trim(),
+    nextPassword: String(formData.get("nextPassword") ?? "").trim(),
+  };
+
+  saveStatus.textContent = "正在修改密码...";
+
+  try {
+    const response = await fetch("/api/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "修改密码失败");
+    }
+
+    passwordForm.reset();
+    saveStatus.textContent = "密码已更新，请妥善保管新密码。";
+  } catch (error) {
+    saveStatus.textContent = error.message || "修改密码失败，请稍后重试。";
   }
 }
 
@@ -173,9 +238,7 @@ async function handleDocumentSubmit(event) {
   try {
     const response = await fetch("/api/documents", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
@@ -233,9 +296,7 @@ async function handleQuestionSubmit(event) {
   try {
     const response = await fetch("/api/ask", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
     });
 
@@ -248,6 +309,32 @@ async function handleQuestionSubmit(event) {
   } catch (error) {
     answerCard.innerHTML = `<p>${escapeHtml(error.message || "查询失败，请稍后再试。")}</p>`;
   }
+}
+
+function renderUploadPreview(draft) {
+  uploadPreviewCard.classList.remove("hidden", "empty");
+  uploadPreviewCard.innerHTML = `
+    <h3>导入预览</h3>
+    <p><strong>标题：</strong>${escapeHtml(draft.title || "未命名制度")}</p>
+    <p><strong>分类：</strong>${escapeHtml(draft.category || "未设置")}</p>
+    <p><strong>来源类型：</strong>${escapeHtml(draft.sourceType || "未知")}</p>
+    <p><strong>正文长度：</strong>${draft.contentLength} 字符</p>
+    <h4>正文预览</h4>
+    <pre class="preview-text">${escapeHtml(draft.preview || "")}</pre>
+    <div class="preview-actions">
+      <button class="primary-button" type="button" id="confirm-import-button">确认入库</button>
+      <button class="secondary-button" type="button" id="cancel-import-button">取消</button>
+    </div>
+  `;
+
+  document.querySelector("#confirm-import-button")?.addEventListener("click", handleConfirmImport);
+  document.querySelector("#cancel-import-button")?.addEventListener("click", handleCancelImport);
+}
+
+function resetUploadPreview() {
+  pendingImportDraft = null;
+  uploadPreviewCard.classList.add("hidden", "empty");
+  uploadPreviewCard.innerHTML = "<p>上传后会先显示正文预览，你确认没问题再入库。</p>";
 }
 
 function renderDocuments(documents) {

@@ -2,15 +2,15 @@
   "users": [
     {
       "username": "admin",
-      "password": "admin123",
+      "passwordHash": "scrypt$2c47819203cfbea78fc26e1e3aa8cc2f$ee0dc9fede830871fcd5fac4b672bd560fbce2eb19f891c71476e1b470e0db34df341d0a585931799212a2975c938d02116a8d1fed317c5dee90303b0ee58a43",
       "role": "admin",
-      "displayName": "管理员"
+      "displayName": "???"
     },
     {
       "username": "user",
-      "password": "user123",
+      "passwordHash": "scrypt$0628c3b2e5c2ac53aed9df5091d1714d$8cac16d08ee24d8c08fc732fca219df684344440cb9da0fcad3ff2e6914bafddd8a87bdd58d6913522ef99d4d2fd04d35e5eaa2b86b52810bfe817abdc44ca76",
       "role": "user",
-      "displayName": "普通用户"
+      "displayName": "????"
     }
   ]
 }

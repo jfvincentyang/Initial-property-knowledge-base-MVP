@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createKnowledgeBase, extractKeywords, findRelevantChunks, splitIntoChunks } from "./knowledge-base.js";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 test("splitIntoChunks keeps clause labels in structured chunks", () => {
   const chunks = splitIntoChunks(
@@ -55,10 +56,10 @@ test("findRelevantChunks prefers latest matching rule when scores tie", () => {
 
 test("knowledge base answer includes clause label, source text, and version note", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "property-kb-"));
-  const storePath = path.join(tempDir, "knowledge-base.json");
+  const storePath = path.join(tempDir, "knowledge-base.sqlite");
   const kb = createKnowledgeBase(storePath);
 
-  await kb.addDocument({
+  const created = await kb.addDocument({
     title: "装修管理规定",
     category: "装修管理",
     content:
@@ -67,13 +68,20 @@ test("knowledge base answer includes clause label, source text, and version note
       "第三条 如破坏承重结构，必须立即上报项目负责人。",
   });
 
-  const raw = JSON.parse(await readFile(storePath, "utf8"));
-  raw.documents.push({
-    ...raw.documents[0],
-    id: "older-copy",
-    createdAt: "2026-01-01T00:00:00.000Z",
-  });
-  await writeFile(storePath, JSON.stringify(raw, null, 2), "utf8");
+  const db = new DatabaseSync(storePath);
+  const row = db.prepare("SELECT * FROM documents WHERE id = ?").get(created.id);
+  db.prepare(`
+    INSERT INTO documents (id, title, category, content, chunks_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    "older-copy",
+    row.title,
+    row.category,
+    row.content,
+    row.chunks_json,
+    "2026-01-01T00:00:00.000Z",
+    row.updated_at
+  );
 
   const answer = await kb.answerQuestion("违规装修应该怎么处理");
 
@@ -87,7 +95,7 @@ test("knowledge base answer includes clause label, source text, and version note
 
 test("knowledge base can delete document by id", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "property-kb-delete-"));
-  const storePath = path.join(tempDir, "knowledge-base.json");
+  const storePath = path.join(tempDir, "knowledge-base.sqlite");
   const kb = createKnowledgeBase(storePath);
 
   const document = await kb.addDocument({
@@ -97,13 +105,14 @@ test("knowledge base can delete document by id", async () => {
   });
 
   await kb.deleteDocument(document.id);
-  const store = JSON.parse(await readFile(storePath, "utf8"));
-  assert.equal(store.documents.length, 0);
+  const db = new DatabaseSync(storePath);
+  const count = db.prepare("SELECT COUNT(*) AS count FROM documents").get().count;
+  assert.equal(count, 0);
 });
 
 test("topic guidance prioritizes decoration clauses over unrelated clauses", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "property-kb-topic-"));
-  const storePath = path.join(tempDir, "knowledge-base.json");
+  const storePath = path.join(tempDir, "knowledge-base.sqlite");
   const kb = createKnowledgeBase(storePath);
 
   await kb.addDocument({
@@ -122,4 +131,23 @@ test("topic guidance prioritizes decoration clauses over unrelated clauses", asy
   assert.ok(answer.references.every((item) => item.clauseLabel !== "第四十七条"));
   assert.ok(answer.steps.some((step) => /告知|签订.*协议/.test(step)));
   assert.ok(answer.violationHandling.some((item) => /劝阻|制止|报告/.test(item)));
+});
+
+test("question themes should not fall back to unrelated decoration clauses", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "property-kb-theme-guard-"));
+  const storePath = path.join(tempDir, "knowledge-base.sqlite");
+  const kb = createKnowledgeBase(storePath);
+
+  await kb.addDocument({
+    title: "装修管理规定",
+    category: "装修管理",
+    content:
+      "第四条 物业服务企业应当对装修住宅行为实施日常检查和管理。\n\n" +
+      "第五条 发现违规装修的，应当责令整改并记录。",
+  });
+
+  const answer = await kb.answerQuestion("物业费应该怎么交");
+
+  assert.equal(answer.applicableRule, "");
+  assert.match(answer.summary, /没有找到足够明确且主题一致|没有找到足够匹配/);
 });
