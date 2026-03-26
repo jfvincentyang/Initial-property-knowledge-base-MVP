@@ -1,0 +1,9 @@
+{
+  "name": "property-knowledge-base-mvp",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node ./server.js",
+    "test": "node ./run-tests.mjs"
+  }
+}

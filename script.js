@@ -1,0 +1,373 @@
+const loginForm = document.querySelector("#login-form");
+const logoutButton = document.querySelector("#logout-button");
+const uploadForm = document.querySelector("#upload-form");
+const uploadFileInput = document.querySelector("#upload-file");
+const documentForm = document.querySelector("#document-form");
+const questionForm = document.querySelector("#question-form");
+const saveStatus = document.querySelector("#save-status");
+const loginStatus = document.querySelector("#login-status");
+const documentList = document.querySelector("#document-list");
+const answerCard = document.querySelector("#answer-card");
+const documentCount = document.querySelector("#document-count");
+const documentPanel = document.querySelector("#document-panel");
+const sessionCard = document.querySelector("#session-card");
+const sessionName = document.querySelector("#session-name");
+const sessionRole = document.querySelector("#session-role");
+
+let currentSession = null;
+
+loginForm.addEventListener("submit", handleLoginSubmit);
+logoutButton.addEventListener("click", handleLogout);
+uploadForm.addEventListener("submit", handleUploadSubmit);
+documentForm.addEventListener("submit", handleDocumentSubmit);
+questionForm.addEventListener("submit", handleQuestionSubmit);
+
+await bootstrap();
+
+async function bootstrap() {
+  await refreshSession();
+  await loadDocuments();
+}
+
+async function refreshSession() {
+  try {
+    const response = await fetch("/api/session");
+    const payload = await response.json();
+    currentSession = payload.session ?? null;
+    renderSession();
+  } catch {
+    currentSession = null;
+    renderSession();
+  }
+}
+
+function renderSession() {
+  const isAdmin = currentSession?.role === "admin";
+  const isLoggedIn = Boolean(currentSession);
+
+  documentPanel.classList.toggle("hidden", !isAdmin);
+  sessionCard.classList.toggle("hidden", !isLoggedIn);
+  loginForm.classList.toggle("hidden", isLoggedIn);
+
+  if (!isLoggedIn) {
+    sessionName.textContent = "未登录";
+    sessionRole.textContent = "请先登录";
+    return;
+  }
+
+  sessionName.textContent = currentSession.displayName || currentSession.username;
+  sessionRole.textContent = isAdmin ? "角色：管理员，可入库、删除和提问" : "角色：普通用户，只能提问";
+}
+
+async function loadDocuments() {
+  try {
+    const response = await fetch("/api/documents");
+    const payload = await response.json();
+    renderDocuments(payload.documents ?? []);
+  } catch {
+    saveStatus.textContent = "加载知识库失败，请确认服务已经启动。";
+  }
+}
+
+async function handleLoginSubmit(event) {
+  event.preventDefault();
+
+  const formData = new FormData(loginForm);
+  const payload = {
+    username: String(formData.get("username") ?? "").trim(),
+    password: String(formData.get("password") ?? "").trim(),
+  };
+
+  loginStatus.textContent = "正在登录...";
+
+  try {
+    const response = await fetch("/api/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "登录失败");
+    }
+
+    currentSession = result.session;
+    loginForm.reset();
+    loginStatus.textContent = "";
+    renderSession();
+  } catch (error) {
+    loginStatus.textContent = error.message || "登录失败，请稍后重试。";
+  }
+}
+
+async function handleLogout() {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } finally {
+    currentSession = null;
+    renderSession();
+    loginStatus.textContent = "";
+    saveStatus.textContent = "";
+    answerCard.classList.add("empty");
+    answerCard.innerHTML = "<p>这里会显示基于知识库生成的结论、依据和建议。</p>";
+  }
+}
+
+async function handleUploadSubmit(event) {
+  event.preventDefault();
+
+  const file = uploadFileInput.files?.[0];
+  if (!file) {
+    saveStatus.textContent = "请先选择要上传的文件。";
+    return;
+  }
+
+  saveStatus.textContent = `正在上传：${file.name}`;
+
+  try {
+    const contentBase64 = await readFileAsBase64(file);
+    const formData = new FormData(uploadForm);
+    const payload = {
+      filename: file.name,
+      title: String(formData.get("title") ?? "").trim(),
+      category: String(formData.get("category") ?? "").trim(),
+      contentBase64,
+    };
+
+    const response = await fetch("/api/documents/import", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "上传入库失败");
+    }
+
+    uploadForm.reset();
+    saveStatus.textContent = `文件已入库：《${result.document.title}》`;
+    await loadDocuments();
+  } catch (error) {
+    saveStatus.textContent = error.message || "上传失败，请稍后重试。";
+  }
+}
+
+async function handleDocumentSubmit(event) {
+  event.preventDefault();
+
+  const formData = new FormData(documentForm);
+  const payload = {
+    title: String(formData.get("title") ?? "").trim(),
+    category: String(formData.get("category") ?? "").trim(),
+    content: String(formData.get("content") ?? "").trim(),
+  };
+
+  saveStatus.textContent = "正在保存制度内容...";
+
+  try {
+    const response = await fetch("/api/documents", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "保存失败");
+    }
+
+    documentForm.reset();
+    saveStatus.textContent = `已保存：《${result.document.title}》`;
+    await loadDocuments();
+  } catch (error) {
+    saveStatus.textContent = error.message || "保存失败，请稍后重试。";
+  }
+}
+
+async function handleDeleteDocument(documentId, documentTitle) {
+  if (!currentSession || currentSession.role !== "admin") {
+    return;
+  }
+
+  const confirmed = window.confirm(`确认删除《${documentTitle}》吗？删除后不会自动恢复。`);
+  if (!confirmed) {
+    return;
+  }
+
+  saveStatus.textContent = `正在删除：《${documentTitle}》`;
+
+  try {
+    const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}`, {
+      method: "DELETE",
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "删除失败");
+    }
+
+    saveStatus.textContent = `已删除：《${documentTitle}》`;
+    await loadDocuments();
+  } catch (error) {
+    saveStatus.textContent = error.message || "删除失败，请稍后重试。";
+  }
+}
+
+async function handleQuestionSubmit(event) {
+  event.preventDefault();
+
+  const formData = new FormData(questionForm);
+  const question = String(formData.get("question") ?? "").trim();
+
+  answerCard.classList.remove("empty");
+  answerCard.innerHTML = "<p>正在检索知识库并生成答案...</p>";
+
+  try {
+    const response = await fetch("/api/ask", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ question }),
+    });
+
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.error ?? "查询失败");
+    }
+
+    renderAnswer(result.answer);
+  } catch (error) {
+    answerCard.innerHTML = `<p>${escapeHtml(error.message || "查询失败，请稍后再试。")}</p>`;
+  }
+}
+
+function renderDocuments(documents) {
+  documentCount.textContent = String(documents.length);
+
+  if (documents.length === 0) {
+    documentList.innerHTML = '<p class="empty-hint">还没有制度内容，先录入一份试试。</p>';
+    return;
+  }
+
+  documentList.innerHTML = documents
+    .map((document) => {
+      const category = document.category ? `分类：${escapeHtml(document.category)}` : "分类：未设置";
+      const snippet = escapeHtml(document.preview ?? "");
+      const createdAt = document.createdAt ? ` · 入库时间：${escapeHtml(formatDate(document.createdAt))}` : "";
+      const actions = currentSession?.role === "admin"
+        ? `<button class="danger-button" type="button" data-action="delete-document" data-id="${escapeHtml(document.id)}" data-title="${escapeHtml(document.title)}">删除</button>`
+        : "";
+
+      return `
+        <article class="document-item">
+          <div class="document-topline">
+            <h3>${escapeHtml(document.title)}</h3>
+            ${actions}
+          </div>
+          <p class="document-meta">${category} · 共 ${document.chunkCount} 个知识片段${createdAt}</p>
+          <p class="document-snippet">${snippet}</p>
+        </article>
+      `;
+    })
+    .join("");
+
+  bindDocumentActions();
+}
+
+function bindDocumentActions() {
+  documentList.querySelectorAll('[data-action="delete-document"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      handleDeleteDocument(button.dataset.id, button.dataset.title);
+    });
+  });
+}
+
+function renderAnswer(answer) {
+  if (!answer) {
+    answerCard.classList.add("empty");
+    answerCard.innerHTML = "<p>没有可展示的答案。</p>";
+    return;
+  }
+
+  const basisItems = (answer.basis ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const stepsItems = (answer.steps ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const violationItems = (answer.violationHandling ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const references = (answer.references ?? [])
+    .map((item) => {
+      const label = [item.title, item.category ? `（${item.category}）` : "", item.clauseLabel || ""]
+        .filter(Boolean)
+        .join(" ");
+      const time = item.createdAt ? ` · 入库时间：${escapeHtml(formatDate(item.createdAt))}` : "";
+
+      return `
+        <li>
+          <strong>${escapeHtml(label)}</strong>${time}
+          <p>${escapeHtml(item.excerpt)}</p>
+        </li>
+      `;
+    })
+    .join("");
+
+  answerCard.innerHTML = `
+    <h3>处理建议</h3>
+    <p>${escapeHtml(answer.summary ?? "知识库中未找到明确依据。")}</p>
+    <h4>建议这样做</h4>
+    <p>${escapeHtml(answer.workGuide || "建议先核对制度依据，再按流程处理。")}</p>
+    <h4>先做什么</h4>
+    <ul>${stepsItems || "<li>建议先补充对应制度后再处理。</li>"}</ul>
+    <h4>发现违规时怎么处理</h4>
+    <ul>${violationItems || "<li>知识库中未找到明确的违规处理条款。</li>"}</ul>
+    <h4>适用制度</h4>
+    <p>${escapeHtml(answer.applicableRule || "知识库中未找到明确适用制度。")}</p>
+    <h4>版本说明</h4>
+    <p>${escapeHtml(answer.versionNote || "当前没有版本提示。")}</p>
+    <h4>依据条款</h4>
+    <ul>${basisItems || "<li>知识库中未找到明确依据。</li>"}</ul>
+    <h4>原文命中</h4>
+    <ul class="reference-list">${references || "<li>暂无命中片段。</li>"}</ul>
+  `;
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const base64 = result.includes(",") ? result.split(",").pop() : result;
+      resolve(base64 || "");
+    };
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "未知时间";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}

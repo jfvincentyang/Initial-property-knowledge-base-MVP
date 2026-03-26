@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>物业制度知识库 MVP</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Property Knowledge Base</p>
+        <h1>物业制度知识库</h1>
+        <p class="hero-text">
+          管理员负责制度入库和维护，普通用户只负责提问。系统会优先依据知识库中的条款，给出可执行的处理建议和原文依据。
+        </p>
+      </div>
+      <div class="hero-card">
+        <p class="hero-card-label">当前状态</p>
+        <strong id="document-count">0</strong>
+        <span>份制度已入库</span>
+      </div>
+    </section>
+
+    <section id="auth-panel" class="panel auth-panel">
+      <header class="panel-header">
+        <div>
+          <h2>登录</h2>
+          <p>管理员可以上传制度，普通用户只能提问查询。</p>
+        </div>
+      </header>
+
+      <form id="login-form" class="stack-form auth-form">
+        <label class="field">
+          <span>账号</span>
+          <input id="login-username" name="username" type="text" placeholder="请输入账号" required>
+        </label>
+
+        <label class="field">
+          <span>密码</span>
+          <input id="login-password" name="password" type="password" placeholder="请输入密码" required>
+        </label>
+
+        <div class="auth-actions">
+          <button class="primary-button" type="submit">登录</button>
+          <p class="inline-status" id="login-status" aria-live="polite"></p>
+        </div>
+      </form>
+
+      <div id="session-card" class="session-card hidden">
+        <div>
+          <p class="hero-card-label">当前账号</p>
+          <strong id="session-name">未登录</strong>
+          <span id="session-role">请先登录</span>
+        </div>
+        <button id="logout-button" class="secondary-button" type="button">退出登录</button>
+      </div>
+    </section>
+
+    <section class="grid-layout">
+      <article id="document-panel" class="panel hidden">
+        <header class="panel-header">
+          <div>
+            <h2>制度入库</h2>
+            <p>管理员可以直接粘贴文本，也可以上传 TXT、MD、DOCX 文件入库。</p>
+          </div>
+        </header>
+
+        <form id="upload-form" class="stack-form upload-form">
+          <label class="field">
+            <span>上传文件</span>
+            <input id="upload-file" name="file" type="file" accept=".txt,.md,.docx,.pdf">
+          </label>
+
+          <label class="field">
+            <span>覆盖标题（可选）</span>
+            <input id="upload-title" name="title" type="text" placeholder="默认使用文件名">
+          </label>
+
+          <label class="field">
+            <span>分类（可选）</span>
+            <input id="upload-category" name="category" type="text" placeholder="例如：装修管理 / 收费管理">
+          </label>
+
+          <button class="primary-button" type="submit">上传文件入库</button>
+          <p class="inline-hint">当前版本支持 TXT、MD、DOCX。PDF 会提示先转成 DOCX/TXT。</p>
+        </form>
+
+        <form id="document-form" class="stack-form">
+          <label class="field">
+            <span>制度名称</span>
+            <input id="doc-title" name="title" type="text" placeholder="例如：装修管理规定" required>
+          </label>
+
+          <label class="field">
+            <span>分类</span>
+            <input id="doc-category" name="category" type="text" placeholder="例如：装修管理 / 客服投诉 / 收费管理">
+          </label>
+
+          <label class="field">
+            <span>制度内容</span>
+            <textarea
+              id="doc-content"
+              name="content"
+              rows="10"
+              placeholder="把物业制度正文粘贴到这里，建议一份制度一条录入。"
+              required
+            ></textarea>
+          </label>
+
+          <button class="primary-button" type="submit">保存文本到知识库</button>
+        </form>
+
+        <p id="save-status" class="inline-status" aria-live="polite"></p>
+      </article>
+
+      <article class="panel">
+        <header class="panel-header">
+          <div>
+            <h2>制度问答</h2>
+            <p>输入业务问题，系统会从知识库里找依据后再回答。</p>
+          </div>
+        </header>
+
+        <form id="question-form" class="stack-form">
+          <label class="field">
+            <span>问题</span>
+            <textarea
+              id="question-input"
+              name="question"
+              rows="5"
+              placeholder="例如：业主违规装修，物业应该怎么处理？"
+              required
+            ></textarea>
+          </label>
+
+          <button class="primary-button" type="submit">查询答案</button>
+        </form>
+
+        <section id="answer-card" class="answer-card empty" aria-live="polite">
+          <p>这里会显示基于知识库生成的结论、依据和建议。</p>
+        </section>
+      </article>
+    </section>
+
+    <section class="panel">
+      <header class="panel-header">
+        <div>
+          <h2>已入库制度</h2>
+          <p>先展示标题、分类和片段数量，方便确认资料是否已进入系统。</p>
+        </div>
+      </header>
+
+      <div id="document-list" class="document-list">
+        <p class="empty-hint">还没有制度内容，先录入一份试试。</p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="./script.js"></script>
+</body>
+</html>
