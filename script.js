@@ -385,24 +385,8 @@ function renderAnswer(answer) {
     return;
   }
 
-  const basisItems = (answer.basis ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const stepsItems = (answer.steps ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const violationItems = (answer.violationHandling ?? []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const references = (answer.references ?? [])
-    .map((item) => {
-      const label = [item.title, item.category ? `（${item.category}）` : "", item.clauseLabel || ""]
-        .filter(Boolean)
-        .join(" ");
-      const time = item.createdAt ? ` · 入库时间：${escapeHtml(formatDate(item.createdAt))}` : "";
-
-      return `
-        <li>
-          <strong>${escapeHtml(label)}</strong>${time}
-          <p>${escapeHtml(item.excerpt)}</p>
-        </li>
-      `;
-    })
-    .join("");
 
   answerCard.innerHTML = `
     <h3>处理建议</h3>
@@ -413,14 +397,6 @@ function renderAnswer(answer) {
     <ul>${stepsItems || "<li>建议先补充对应制度后再处理。</li>"}</ul>
     <h4>发现违规时怎么处理</h4>
     <ul>${violationItems || "<li>知识库中未找到明确的违规处理条款。</li>"}</ul>
-    <h4>适用制度</h4>
-    <p>${escapeHtml(answer.applicableRule || "知识库中未找到明确适用制度。")}</p>
-    <h4>版本说明</h4>
-    <p>${escapeHtml(answer.versionNote || "当前没有版本提示。")}</p>
-    <h4>依据条款</h4>
-    <ul>${basisItems || "<li>知识库中未找到明确依据。</li>"}</ul>
-    <h4>原文命中</h4>
-    <ul class="reference-list">${references || "<li>暂无命中片段。</li>"}</ul>
   `;
 }
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createLoginLimiter, ensureHashedUsers, getClientIp, loadUsers, updateUserPassword, verifyPassword } from "./auth.js";
 import { extractImportedDocument } from "./file-import.js";
 import { createKnowledgeBase } from "./knowledge-base.js";
+import { createModelClient } from "./model-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +18,7 @@ const databasePath = path.join(__dirname, "data", "knowledge-base.sqlite");
 const legacyJsonPath = path.join(__dirname, "data", "knowledge-base.json");
 const importTempRoot = path.join(__dirname, "data", "imports");
 const kb = createKnowledgeBase(databasePath, { legacyJsonPath });
+const modelClient = createModelClient();
 const sessions = new Map();
 const loginLimiter = createLoginLimiter();
 const importDrafts = new Map();
@@ -180,8 +182,14 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/api/ask" && request.method === "POST") {
       requireAuthenticated(session);
       const payload = await readJsonBody(request);
-      const answer = await kb.answerQuestion(payload.question);
-      return sendJson(response, 200, { answer });
+      const context = await kb.buildAnswerContext(payload.question);
+      const answer = await buildFinalAnswer(context);
+      return sendJson(response, 200, {
+        answer,
+        answerMode: answer.answerMode ?? "rules",
+        modelEnabled: modelClient.enabled,
+        modelName: modelClient.enabled ? modelClient.model : "",
+      });
     }
 
     return await serveStaticFile(url.pathname, response);
@@ -199,6 +207,7 @@ server.listen(PORT, async () => {
   console.log(`Property KB server running at http://localhost:${PORT}`);
   console.log(`Loaded ${users.length} local accounts from config/users.json`);
   console.log(`Environment: ${NODE_ENV}`);
+  console.log(`Model integration: ${modelClient.enabled ? `enabled (${modelClient.model})` : "disabled"}`);
 });
 
 async function serveStaticFile(pathname, response) {
@@ -226,6 +235,51 @@ async function serveStaticFile(pathname, response) {
   });
 
   createReadStream(filePath).pipe(response);
+}
+
+async function buildFinalAnswer(context) {
+  const fallbackAnswer = context.answer;
+  if (!modelClient.enabled || !Array.isArray(context.matches) || context.matches.length === 0) {
+    return { ...fallbackAnswer, answerMode: "rules" };
+  }
+
+  try {
+    const modelAnswer = await modelClient.answerQuestion({
+      question: context.question,
+      matches: context.matches,
+      fallbackAnswer,
+    });
+
+    if (!modelAnswer) {
+      return { ...fallbackAnswer, answerMode: "rules" };
+    }
+
+    return mergeAnswer(fallbackAnswer, modelAnswer, modelClient.model);
+  } catch (error) {
+    console.error("Model answer failed, falling back to rules:", error.message);
+    return { ...fallbackAnswer, answerMode: "rules" };
+  }
+}
+
+function mergeAnswer(fallbackAnswer, modelAnswer, modelName) {
+  return {
+    ...fallbackAnswer,
+    summary: modelAnswer.summary || fallbackAnswer.summary,
+    workGuide: modelAnswer.workGuide || fallbackAnswer.workGuide,
+    steps: modelAnswer.steps?.length ? modelAnswer.steps : fallbackAnswer.steps,
+    violationHandling: modelAnswer.violationHandling?.length
+      ? modelAnswer.violationHandling
+      : fallbackAnswer.violationHandling,
+    basis: modelAnswer.basis?.length
+      ? uniqueStrings([...modelAnswer.basis, ...(fallbackAnswer.basis ?? [])])
+      : fallbackAnswer.basis,
+    answerMode: "model",
+    modelName,
+  };
+}
+
+function uniqueStrings(items) {
+  return [...new Set((Array.isArray(items) ? items : []).filter(Boolean))];
 }
 
 async function readJsonBody(request) {

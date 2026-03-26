@@ -157,6 +157,11 @@ export function createKnowledgeBase(databasePath, options = {}) {
     },
 
     async answerQuestion(question) {
+      const context = await this.buildAnswerContext(question);
+      return context.answer;
+    },
+
+    async buildAnswerContext(question) {
       const cleanQuestion = String(question ?? "").trim();
       if (!cleanQuestion) {
         throw new Error("问题不能为空");
@@ -167,6 +172,9 @@ export function createKnowledgeBase(databasePath, options = {}) {
 
       if (matches.length === 0 || matches[0].score < 3) {
         return {
+          question: cleanQuestion,
+          matches: [],
+          answer: {
           summary: "知识库中没有找到足够匹配的制度依据，暂时不能给出可靠处理意见。",
           workGuide: "建议先补充对应制度，再按照知识库依据处理。",
           applicableRule: "",
@@ -178,10 +186,15 @@ export function createKnowledgeBase(databasePath, options = {}) {
           ],
           violationHandling: [],
           references: [],
+          },
         };
       }
 
-      return buildAnswer(cleanQuestion, matches);
+      return {
+        question: cleanQuestion,
+        matches,
+        answer: buildAnswer(cleanQuestion, matches),
+      };
     },
 
     async ensureNormalizedStore() {
