@@ -1,0 +1,5 @@
+node_modules/
+data/imports/
+tmp_docx/
+tmp_docx.zip
+tmp_pdf_source.txt
